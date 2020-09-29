@@ -1,42 +1,30 @@
 import json
+import threading
+import boto3
 from fileHandler import fileHandler
 from logHandler import logHandler
-import boto3
 
 class eventProcessing:
 
-    def main(self):
-        log = logHandler()
-        file = fileHandler(log)
-        log.info("Started")
-        config = file.loadconfig()
-        access_key = config["ACCESS_KEY"]
-        secret_key = config["SECRET_KEY"]
-        bucket_name = config["BUCKET_NAME"]
-        bucket_key = config["BUCKET_KEY"]
-        topic_arn = config["SNS_TOPIC_ARN"]
-
+    def setup(self,access_key,secret_key,config,topic_arn):
         s3 = boto3.client(
              's3',
              aws_access_key_id=access_key,
              aws_secret_access_key=secret_key,
-             config=config["AWS_CONFIG"]
+             config=config
         )
         sqs = boto3.client(
              'sqs',
              aws_access_key_id=access_key,
              aws_secret_access_key=secret_key,
-             config=config["AWS_CONFIG"]
+             config=config
         )
         sns = boto3.client(
              'sns',
              aws_access_key_id=access_key,
              aws_secret_access_key=secret_key,
-             config=config["AWS_CONFIG"]
+             config=config
         )
-
-        s3.download_file(bucket_name, bucket_key, 'locations.json')
-        locations = file.loadjson('locations.json')
 
         response = sqs.create_queue(QueueName='sensors')
         log.info("Queue created")
@@ -79,6 +67,10 @@ class eventProcessing:
         subscriptionArn = response["SubscriptionArn"]
         log.debug("Subscription ARN: "+subscriptionArn)
 
+        return s3,sqs,queue_url,queue_arn
+
+    def process_messages(self,sqs,queue_url,locations):
+        log.info("process messages")
         response = sqs.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=10,
@@ -86,18 +78,42 @@ class eventProcessing:
             WaitTimeSeconds=20
         )
         for message in response["Messages"]:
-            log.debug(message)
+            sensor = json.loads(message["Body"])
+            sensor_msg = json.loads(sensor["Message"])
+            if sensor_msg["locationId"] in locations:
+                log.info(sensor_msg)
 
+    def main(self):
+        global log
+        log = logHandler()
+        file = fileHandler(log)
+        log.info("Started")
+        config = file.loadconfig()
+        access_key = config["ACCESS_KEY"]
+        secret_key = config["SECRET_KEY"]
+        bucket_name = config["BUCKET_NAME"]
+        bucket_key = config["BUCKET_KEY"]
+        topic_arn = config["SNS_TOPIC_ARN"]
 
+        s3,sqs,queue_url,queue_arn = self.setup(
+            access_key=access_key,
+            secret_key=secret_key,
+            config=config["AWS_CONFIG"],
+            topic_arn=topic_arn
+        )
 
+        s3.download_file(bucket_name, bucket_key, 'locations.json')
+        locations = file.loadjson('locations.json')
+
+        ticker = threading.Event()
+        test = 10
+        while not ticker.wait(2) and test>0:
+            test -= 1
+            self.process_messages(sqs,queue_url,locations)
 
         response = sqs.delete_queue(QueueUrl=queue_url)
         log.info("Queue deleted")
         log.info("Ended")
-
-
-
-
 
 if __name__ == "__main__":
     eventProcessing().main()
