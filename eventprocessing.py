@@ -1,5 +1,6 @@
 import json
 from fileHandler import fileHandler
+from logHandler import logHandler
 import boto3
 
 class eventProcessing:
@@ -10,19 +11,24 @@ class eventProcessing:
         self.BUCKET_NAME = "eventprocessing-altran-locationss3bucket-1ub1fsm0jlky7"
 
     def main(self):
-        fHandler = fileHandler()
-        self.ACCESS_KEY, self.SECRET_KEY = fHandler.loadkeys()
+        log = logHandler()
+        file = fileHandler(log)
+        log.info("Started")
 
-        s3 = boto3.resource(
+        self.ACCESS_KEY, self.SECRET_KEY = file.loadkeys()
+
+        s3 = boto3.client(
              's3',
              aws_access_key_id=self.ACCESS_KEY,
              aws_secret_access_key=self.SECRET_KEY,
-             config=fHandler.loadconfig()
+             config=file.loadconfig()
         )
 
-        bucket = s3.Bucket(name=self.BUCKET_NAME)
+        s3.download_file(self.BUCKET_NAME, 'locations.json', 'locations.json')
 
-        print(bucket.name)
+        file.loadjson('locations.json')
+        log.info("Ended")
+
 
 
 
