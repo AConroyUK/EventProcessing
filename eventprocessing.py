@@ -1,6 +1,7 @@
 import json
 import threading
 import boto3
+import datetime
 from fileHandler import fileHandler
 from logHandler import logHandler
 
@@ -69,7 +70,7 @@ class eventProcessing:
 
         return s3,sqs,queue_url,queue_arn
 
-    def process_messages(self,sqs,queue_url,locations,prev_messages):
+    def process_messages(self,sqs,queue_url,locations,prev_messages,minute_messages):
         log.debug("process messages")
         response = sqs.receive_message(
             QueueUrl=queue_url,
@@ -79,26 +80,54 @@ class eventProcessing:
         )
         for message in response["Messages"]:
             sensor = json.loads(message["Body"])
-            sensor_msg = json.loads(sensor["Message"])
+            receipt = message["ReceiptHandle"]
+            response = sqs.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=receipt
+            )
+            #log.debug(sensor["Message"])
+            try:
+                sensor_msg = json.loads(sensor["Message"])
+            except json.decoder.JSONDecodeError:
+                try:
+                    log.error("JSONDecodeError: "+str(sensor["Message"]))
+                    break
+                except UnicodeEncodeError:
+                    log.error("UnicodeEncodeError")
+                    break
+
+
             if sensor_msg["locationId"] in locations:
                 try:
                     if sensor_msg["eventId"] in prev_messages[sensor_msg["locationId"]]:
                         #log.debug("duplicate event found")
-                        log.debug("duplicate: "+str(sensor_msg))
+                        log.debug("duplicate event: "+sensor_msg["eventId"])
                     else:
                         #log.debug(sensor_msg)
+                        if len(prev_messages[sensor_msg["locationId"]]) == 25:
+                            prev_messages[sensor_msg["locationId"]].pop(0)
                         prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                        self.pretty_print(list(prev_messages.keys()).index(sensor_msg["locationId"]),list(prev_messages[sensor_msg["locationId"]]).index(sensor_msg["eventId"]),sensor_msg["value"])
+                        #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
+                        minute_messages.append(int(sensor_msg["value"]))
                 except KeyError:
+                    log.debug("location added: " + sensor_msg["locationId"])
                     prev_messages[sensor_msg["locationId"]] = []
                     #log.debug(sensor_msg)
                     prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                    self.pretty_print(list(prev_messages.keys()).index(sensor_msg["locationId"]),list(prev_messages[sensor_msg["locationId"]]).index(sensor_msg["eventId"]),sensor_msg["value"])
+                    #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
+                    minute_messages.append(int(sensor_msg["value"]))
 
-        return prev_messages
+        return prev_messages,minute_messages
+
+    def calculate_average(self,minute_messages,file):
+        if len(minute_messages)>0:
+            file.csvoutput(sum(minute_messages)/len(minute_messages))
+            log.info("output to csv")
+        # datetime.utcfromtimestamp()
+        # pass
 
     def pretty_print(self,location,event,value):
-        string = "| " + str(location).rjust(8) + " | " + str(event).rjust(5) + " | " + str(value).rjust(20) + "|"
+        string = "| " + str(location).rjust(36) + " | " + str(event).rjust(15) + " | " + str(value).rjust(20) + "|"
         print(string)
         #print("-"*66)
 
@@ -125,14 +154,24 @@ class eventProcessing:
         locations = file.loadjson('locations.json')
 
         ticker = threading.Event()
-        test = 20
-        print()
-        print("| " + "Location".ljust(8) + " | " + "Event".ljust(5) + " | " + "Value".ljust(20) + "|")
-        print("-"*42)
+        test = 300
+        #print()
+        #print("| " + "Location".ljust(36) + " | " + "Timestamp".ljust(15) + " | " + "Value".ljust(20) + "|")
+        #print("-"*80)
         prev_messages = {}
-        while not ticker.wait(2) and test>0:
-            test -= 1
-            self.process_messages(sqs,queue_url,locations,prev_messages)
+        minute_messages = []
+        start_time = datetime.datetime.now()
+        finish_time = start_time + datetime.timedelta(minutes = 10)
+        now = datetime.datetime.now()
+        last_average = now
+
+        while not ticker.wait(5) and finish_time>now:
+            prev_messages, minute_messages = self.process_messages(sqs,queue_url,locations,prev_messages,minute_messages)
+            now = datetime.datetime.now()
+            if last_average + datetime.timedelta(minutes = 1) < now:
+                last_average = now
+                self.calculate_average(minute_messages,file)
+                minute_messages = []
 
 
         response = sqs.delete_queue(QueueUrl=queue_url)

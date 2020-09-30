@@ -22,3 +22,7 @@ class fileHandler:
                 locations.append(sensor["id"])
             log.info(path + " loaded")
             return locations
+
+    def csvoutput(self,mean):
+        with open("eventProcessing.csv", "a+") as csvfile:
+            csvfile.write(str(mean)+"\n")

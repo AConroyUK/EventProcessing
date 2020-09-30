@@ -3,8 +3,8 @@ from logging import handlers
 
 class logHandler:
     def __init__(self):
-        # with open("eventprocessing.log", 'w') as logfile:
-        #     pass
+        with open("eventprocessing.log", 'w') as logfile:
+            pass
         self.logger = logging.getLogger("eventprocessing.log")
         formatter = logging.Formatter(
             '%(asctime)s |  %(levelname)s: %(message)s')
