@@ -69,8 +69,8 @@ class eventProcessing:
 
         return s3,sqs,queue_url,queue_arn
 
-    def process_messages(self,sqs,queue_url,locations):
-        log.info("process messages")
+    def process_messages(self,sqs,queue_url,locations,prev_messages):
+        log.debug("process messages")
         response = sqs.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=10,
@@ -81,7 +81,26 @@ class eventProcessing:
             sensor = json.loads(message["Body"])
             sensor_msg = json.loads(sensor["Message"])
             if sensor_msg["locationId"] in locations:
-                log.info(sensor_msg)
+                try:
+                    if sensor_msg["eventId"] in prev_messages[sensor_msg["locationId"]]:
+                        #log.debug("duplicate event found")
+                        log.debug("duplicate: "+str(sensor_msg))
+                    else:
+                        #log.debug(sensor_msg)
+                        prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                        self.pretty_print(list(prev_messages.keys()).index(sensor_msg["locationId"]),list(prev_messages[sensor_msg["locationId"]]).index(sensor_msg["eventId"]),sensor_msg["value"])
+                except KeyError:
+                    prev_messages[sensor_msg["locationId"]] = []
+                    #log.debug(sensor_msg)
+                    prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                    self.pretty_print(list(prev_messages.keys()).index(sensor_msg["locationId"]),list(prev_messages[sensor_msg["locationId"]]).index(sensor_msg["eventId"]),sensor_msg["value"])
+
+        return prev_messages
+
+    def pretty_print(self,location,event,value):
+        string = "| " + str(location).rjust(8) + " | " + str(event).rjust(5) + " | " + str(value).rjust(20) + "|"
+        print(string)
+        #print("-"*66)
 
     def main(self):
         global log
@@ -106,10 +125,15 @@ class eventProcessing:
         locations = file.loadjson('locations.json')
 
         ticker = threading.Event()
-        test = 10
+        test = 20
+        print()
+        print("| " + "Location".ljust(8) + " | " + "Event".ljust(5) + " | " + "Value".ljust(20) + "|")
+        print("-"*42)
+        prev_messages = {}
         while not ticker.wait(2) and test>0:
             test -= 1
-            self.process_messages(sqs,queue_url,locations)
+            self.process_messages(sqs,queue_url,locations,prev_messages)
+
 
         response = sqs.delete_queue(QueueUrl=queue_url)
         log.info("Queue deleted")
