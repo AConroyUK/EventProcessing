@@ -89,7 +89,9 @@ class eventProcessing:
         print(string)
         #print("-"*66)
 
-    def process_messages(self,log,resourcelock,locations,queue_url,sqs,prev_messages,minute_messages):
+    def process_messages(self,resourcelock,locations,queue_url,sqs):
+        prev_messages = self.prev_messages
+        minute_messages = self.minute_messages
         now = datetime.datetime.now()
         finish_time = now + datetime.timedelta(minutes = 1)
         while finish_time>now:
@@ -140,7 +142,7 @@ class eventProcessing:
                     finally:
                         resourcelock.release()
 
-            log.info("processed "+str(num_of_messages)+" messages")
+            log.debug("processed "+str(num_of_messages)+" messages")
             self.prev_messages = prev_messages
             self.minute_messages = minute_messages
             self.batch_delete = batch_delete
@@ -178,11 +180,10 @@ class eventProcessing:
         resourcelock = Lock()
         threads = []
         response = []
-        threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,self.prev_messages,self.minute_messages,)))
-        for thread in threads:
-            thread.setDaemon(True)
-            thread.start()
-            thread.join()
+        threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,),name="MsgProcessor"+str(len(threads))))
+        threads[0].setDaemon(True)
+        threads[0].start()
+            # thread.join()
 
         while not ticker.wait(wait_time) and finish_time>now:
             now = datetime.datetime.now()
@@ -192,6 +193,7 @@ class eventProcessing:
                     QueueUrl=queue_url,
                     Entries=self.batch_delete
                 )
+                log.info("batch deleted")
 
             #prev_messages, minute_messages = self.process_messages(resourcelock,sqs,queue_url,locations,prev_messages,minute_messages)
             #self.process_messages(resourcelock,locations)
@@ -209,14 +211,23 @@ class eventProcessing:
                     log.info("reduced wait time to "+str(wait_time))
                 else:
                     #create new thread
-                    pass
+                    n = len(threads)
+                    threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,),name="MsgProcessor"+str(n)))
+                    threads[n].setDaemon(True)
+                    threads[n].start()
+                    log.info("new thread added")
+
             if (0 == num_of_messages):
                 if wait_time * 2 < 10:
                     wait_time = wait_time * 2
                     log.info("increased wait time to "+str(wait_time))
-                else:
-                    #delete thread
+                elif len(threads) > 1:
                     pass
+                    #delete thread
+                    # n = len(threads) - 1
+                    # threads[n].start()
+                    # threads.remove(threads[n])
+                    # log.info("thread removed")
 
 
             if last_average + datetime.timedelta(minutes = 1) < now:

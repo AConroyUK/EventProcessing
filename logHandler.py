@@ -7,7 +7,7 @@ class logHandler:
             pass
         self.logger = logging.getLogger("eventprocessing.log")
         formatter = logging.Formatter(
-            '%(asctime)s | %(threadName)s |  %(levelname)s: %(message)s')
+            '%(asctime)s | %(threadName)-15s |  %(levelname)s: %(message)s')
         self.logger.setLevel(logging.DEBUG)
 
         stream_handler = logging.StreamHandler()
@@ -24,10 +24,19 @@ class logHandler:
         self.logger.addHandler(stream_handler)
 
     def info(self,string):
-        self.logger.info(string)
+        try:
+            self.logger.info(string)
+        except:
+            self.logger.info("Failed to process logging string")
 
     def error(self,string):
-        self.logger.error(string)
+        try:
+            self.logger.error(string)
+        except:
+            self.logger.error("Failed to process logging string")
 
     def debug(self,string):
-        self.logger.debug(string)
+        try:
+            self.logger.debug(string)
+        except:
+            self.logger.error("Failed to process logging string")
