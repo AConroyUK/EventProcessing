@@ -6,60 +6,13 @@ from multiprocessing import Process,Lock
 from fileHandler import fileHandler
 from logHandler import logHandler
 
-def process_messages(log,resourcelock,locations,queue_url,sqs,prev_messages,minute_messages):
-    response = sqs.receive_message(
-        QueueUrl=queue_url,
-        MaxNumberOfMessages=10,
-        VisibilityTimeout=20,
-        WaitTimeSeconds=20
-    )
-    num_of_messages = len(response["Messages"])
-    batch_delete = []
-    for message in response["Messages"]:
-        sensor = json.loads(message["Body"])
-        batch_delete.append(dict([('Id',message["MessageId"]),('ReceiptHandle',message["ReceiptHandle"])]))
-        #log.debug(sensor["Message"])
-        try:
-            sensor_msg = json.loads(sensor["Message"])
-        except json.decoder.JSONDecodeError:
-            try:
-                log.error("JSONDecodeError: "+str(sensor["Message"]))
-                break
-            except UnicodeEncodeError:
-                log.error("UnicodeEncodeError")
-                break
 
-        if sensor_msg["locationId"] in locations:
-            resourcelock.acquire()
-            try:
-                try:
-                    if sensor_msg["eventId"] in prev_messages[sensor_msg["locationId"]]:
-                        #log.debug("duplicate event found")
-                        log.debug("duplicate event: "+sensor_msg["eventId"])
-                    else:
-                        #log.debug(sensor_msg)
-                        if len(prev_messages[sensor_msg["locationId"]]) == 25:
-                            prev_messages[sensor_msg["locationId"]].pop(0)
-                        prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                        #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
-                        minute_messages.append(int(sensor_msg["value"]))
-                except KeyError:
-                    log.debug("location added: " + sensor_msg["locationId"])
-                    prev_messages[sensor_msg["locationId"]] = []
-                    #log.debug(sensor_msg)
-                    prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                    #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
-                    minute_messages.append(int(sensor_msg["value"]))
-            finally:
-                resourcelock.release()
-
-    log.info("processed "+str(num_of_messages)+" messages")
-    log.info(prev_messages)
-    log.info(minute_messages)
-    log.info(batch_delete)
-    return prev_messages,minute_messages,batch_delete
 
 class eventProcessing:
+    def __init__(self):
+        self.prev_messages = {}
+        self.minute_messages = []
+        self.batch_delete = []
 
     def setup(self,access_key,secret_key,config,topic_arn):
         s3 = boto3.client(
@@ -136,6 +89,63 @@ class eventProcessing:
         print(string)
         #print("-"*66)
 
+    def process_messages(self,log,resourcelock,locations,queue_url,sqs,prev_messages,minute_messages):
+        now = datetime.datetime.now()
+        finish_time = now + datetime.timedelta(minutes = 1)
+        while finish_time>now:
+            now = datetime.datetime.now()
+            response = sqs.receive_message(
+                QueueUrl=queue_url,
+                MaxNumberOfMessages=10,
+                VisibilityTimeout=20,
+                WaitTimeSeconds=20
+            )
+            num_of_messages = len(response["Messages"])
+            batch_delete = []
+            for message in response["Messages"]:
+                sensor = json.loads(message["Body"])
+                batch_delete.append(dict([('Id',message["MessageId"]),('ReceiptHandle',message["ReceiptHandle"])]))
+                #log.debug(sensor["Message"])
+                try:
+                    sensor_msg = json.loads(sensor["Message"])
+                except json.decoder.JSONDecodeError:
+                    try:
+                        log.error("JSONDecodeError: "+str(sensor["Message"]))
+                        break
+                    except UnicodeEncodeError:
+                        log.error("UnicodeEncodeError")
+                        break
+
+                if sensor_msg["locationId"] in locations:
+                    resourcelock.acquire()
+                    try:
+                        try:
+                            if sensor_msg["eventId"] in prev_messages[sensor_msg["locationId"]]:
+                                #log.debug("duplicate event found")
+                                log.debug("duplicate event: "+sensor_msg["eventId"])
+                            else:
+                                #log.debug(sensor_msg)
+                                if len(prev_messages[sensor_msg["locationId"]]) == 25:
+                                    prev_messages[sensor_msg["locationId"]].pop(0)
+                                prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                                #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
+                                minute_messages.append(int(sensor_msg["value"]))
+                        except KeyError:
+                            log.debug("location added: " + sensor_msg["locationId"])
+                            prev_messages[sensor_msg["locationId"]] = []
+                            #log.debug(sensor_msg)
+                            prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                            #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
+                            minute_messages.append(int(sensor_msg["value"]))
+                    finally:
+                        resourcelock.release()
+
+            log.info("processed "+str(num_of_messages)+" messages")
+            self.prev_messages = prev_messages
+            self.minute_messages = minute_messages
+            self.batch_delete = batch_delete
+
+
     def main(self):
         global log
         log = logHandler()
@@ -157,8 +167,8 @@ class eventProcessing:
 
         s3.download_file(bucket_name, bucket_key, 'locations.json')
         locations = file.loadjson('locations.json')
-        prev_messages = {}
-        minute_messages = []
+        # prev_messages = {}
+        # minute_messages = []
         ticker = threading.Event()
         start_time = datetime.datetime.now()
         finish_time = start_time + datetime.timedelta(minutes = 1)
@@ -168,17 +178,19 @@ class eventProcessing:
         resourcelock = Lock()
         threads = []
         response = []
-        threads.append(threading.Thread(target=process_messages, args=(log,resourcelock,locations,queue_url,sqs,prev_messages,minute_messages,)))
+        threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,self.prev_messages,self.minute_messages,)))
+        for thread in threads:
+            thread.setDaemon(True)
+            thread.start()
+            thread.join()
 
         while not ticker.wait(wait_time) and finish_time>now:
             now = datetime.datetime.now()
-            for thread in threads:
 
-                prev_messages, minute_messages,batch_delete = thread.start()
-                # thread.join()
+            if self.batch_delete != []:
                 response = sqs.delete_message_batch(
                     QueueUrl=queue_url,
-                    Entries=batch_delete
+                    Entries=self.batch_delete
                 )
 
             #prev_messages, minute_messages = self.process_messages(resourcelock,sqs,queue_url,locations,prev_messages,minute_messages)
@@ -189,6 +201,7 @@ class eventProcessing:
                 AttributeNames=['ApproximateNumberOfMessages']
             )
             num_of_messages = int(response["Attributes"]["ApproximateNumberOfMessages"])
+
             log.info("approx "+str(num_of_messages)+" messages in queue")
             if (10 < num_of_messages):
                 if wait_time / 2 > 0.0001:
@@ -208,8 +221,8 @@ class eventProcessing:
 
             if last_average + datetime.timedelta(minutes = 1) < now:
                 last_average = now
-                self.calculate_average(file,minute_messages)
-                minute_messages = []
+                self.calculate_average(file,self.minute_messages)
+                self.minute_messages = []
 
 
         response = sqs.delete_queue(QueueUrl=queue_url)

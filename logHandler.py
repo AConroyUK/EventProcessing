@@ -7,7 +7,7 @@ class logHandler:
             pass
         self.logger = logging.getLogger("eventprocessing.log")
         formatter = logging.Formatter(
-            '%(asctime)s |  %(levelname)s: %(message)s')
+            '%(asctime)s | %(threadName)s |  %(levelname)s: %(message)s')
         self.logger.setLevel(logging.DEBUG)
 
         stream_handler = logging.StreamHandler()
