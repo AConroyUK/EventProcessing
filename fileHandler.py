@@ -10,6 +10,11 @@ class fileHandler:
     def loadconfig(self):
         with open('eventProcessing.config') as configfile:
             configData = json.load(configfile)
+            log.debug(configData)
+            log.debug(configData[0])
+            log.debug(configData[0]["CONFIG_TO_LOAD"])
+            config_to_load = configData[0]["CONFIG_TO_LOAD"]
+            configData = configData[config_to_load]
             configData["AWS_CONFIG"] = Config(region_name = 'eu-west-1')
             log.info("Config loaded")
             return configData
