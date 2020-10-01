@@ -2,6 +2,7 @@ import json
 import threading
 import boto3
 import datetime
+import time
 from multiprocessing import Process,Lock
 from fileHandler import fileHandler
 from logHandler import logHandler
@@ -14,6 +15,8 @@ class eventProcessing:
         self.minute_messages = []
         self.batch_delete = []
         self.threads = []
+        self.active_threads = 0
+        self.queue_empty = False
 
     def setup(self,access_key,secret_key,config,topic_arn):
         s3 = boto3.client(
@@ -96,6 +99,7 @@ class eventProcessing:
         now = datetime.datetime.now()
         finish_time = now + datetime.timedelta(minutes = 1)
         log.info("thread "+str(thread_num)+" started")
+        self.active_threads += 1
         while finish_time>now and len(self.threads) > thread_num:
             now = datetime.datetime.now()
             response = sqs.receive_message(
@@ -149,6 +153,7 @@ class eventProcessing:
             self.minute_messages = minute_messages
             self.batch_delete = batch_delete
         log.info("thread "+str(thread_num)+" stopped")
+        self.active_threads -= 1
 
 
     def main(self):
@@ -184,7 +189,7 @@ class eventProcessing:
         self.threads = []
         response = []
         thread_num = len(self.threads)
-        self.threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num),name="MsgProcessor"+str(thread_num)))
+        self.threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num,),name="MsgProcessor"+str(thread_num)))
         self.threads[0].setDaemon(True)
         self.threads[0].start()
             # thread.join()
@@ -222,8 +227,8 @@ class eventProcessing:
                     self.threads[thread_num].start()
 
             if (0 == num_of_messages):
+                self.queue_empty = True
                 if len(self.threads) > 1:
-                    pass
                     #delete thread
                     thread_num = len(self.threads) - 1
                     self.threads.remove(self.threads[thread_num])
@@ -237,13 +242,14 @@ class eventProcessing:
                 last_average = now
                 self.calculate_average(file,self.minute_messages)
                 self.minute_messages = []
-
+        log.info(self.threads)
         self.threads = []
-
-        now = datetime.datetime.now()
-        finish_time = now + datetime.timedelta(minutes = 0.5)
-        while finish_time>now:
-            now = datetime.datetime.now()
+        print(self.active_threads)
+        if self.active_threads > 0:
+            self.threads = []
+            log.info("waiting for remaining threads to terminate")
+        while self.active_threads > 0:
+            time.sleep(0.1)
 
         response = sqs.delete_queue(QueueUrl=queue_url)
         log.info("Queue deleted")
