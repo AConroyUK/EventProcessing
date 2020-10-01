@@ -31,3 +31,7 @@ class fileHandler:
     def csvoutput(self,mean):
         with open("eventProcessing.csv", "a+") as csvfile:
             csvfile.write(str(mean)+"\n")
+
+    def message_num_output(self,num_of_messages,num_of_threads):
+        with open("num_of_messages.csv", "a+") as csvfile:
+            csvfile.write(str(num_of_messages)+","+str(num_of_threads)+"\n")

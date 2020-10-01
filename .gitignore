@@ -3,3 +3,4 @@ eventprocessing.config
 locations.json
 eventprocessing.log
 eventProcessing.csv
+num_of_messages.csv

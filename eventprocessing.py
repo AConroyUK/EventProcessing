@@ -13,6 +13,7 @@ class eventProcessing:
         self.prev_messages = {}
         self.minute_messages = []
         self.batch_delete = []
+        self.threads = []
 
     def setup(self,access_key,secret_key,config,topic_arn):
         s3 = boto3.client(
@@ -89,12 +90,13 @@ class eventProcessing:
         print(string)
         #print("-"*66)
 
-    def process_messages(self,resourcelock,locations,queue_url,sqs):
+    def process_messages(self,resourcelock,locations,queue_url,sqs,thread_num):
         prev_messages = self.prev_messages
         minute_messages = self.minute_messages
         now = datetime.datetime.now()
         finish_time = now + datetime.timedelta(minutes = 1)
-        while finish_time>now:
+        log.info("thread "+str(thread_num)+" started")
+        while finish_time>now and len(self.threads) > thread_num:
             now = datetime.datetime.now()
             response = sqs.receive_message(
                 QueueUrl=queue_url,
@@ -112,10 +114,10 @@ class eventProcessing:
                     sensor_msg = json.loads(sensor["Message"])
                 except json.decoder.JSONDecodeError:
                     try:
-                        log.error("JSONDecodeError: "+str(sensor["Message"]))
+                        log.info("JSONDecodeError: "+str(sensor["Message"]))
                         break
                     except UnicodeEncodeError:
-                        log.error("UnicodeEncodeError")
+                        log.info("UnicodeEncodeError")
                         break
 
                 if sensor_msg["locationId"] in locations:
@@ -146,6 +148,7 @@ class eventProcessing:
             self.prev_messages = prev_messages
             self.minute_messages = minute_messages
             self.batch_delete = batch_delete
+        log.info("thread "+str(thread_num)+" stopped")
 
 
     def main(self):
@@ -178,11 +181,12 @@ class eventProcessing:
         last_average = now
         wait_time = 0.01
         resourcelock = Lock()
-        threads = []
+        self.threads = []
         response = []
-        threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,),name="MsgProcessor"+str(len(threads))))
-        threads[0].setDaemon(True)
-        threads[0].start()
+        thread_num = len(self.threads)
+        self.threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num),name="MsgProcessor"+str(thread_num)))
+        self.threads[0].setDaemon(True)
+        self.threads[0].start()
             # thread.join()
 
         while not ticker.wait(wait_time) and finish_time>now:
@@ -193,7 +197,7 @@ class eventProcessing:
                     QueueUrl=queue_url,
                     Entries=self.batch_delete
                 )
-                log.info("batch deleted")
+                log.info("batch of " + str(len(self.batch_delete)) +" deleted")
 
             #prev_messages, minute_messages = self.process_messages(resourcelock,sqs,queue_url,locations,prev_messages,minute_messages)
             #self.process_messages(resourcelock,locations)
@@ -205,29 +209,28 @@ class eventProcessing:
             num_of_messages = int(response["Attributes"]["ApproximateNumberOfMessages"])
 
             log.info("approx "+str(num_of_messages)+" messages in queue")
+            file.message_num_output(num_of_messages,len(self.threads))
             if (10 < num_of_messages):
                 if wait_time / 2 > 0.0001:
                     wait_time = wait_time / 2
                     log.info("reduced wait time to "+str(wait_time))
-                else:
+                elif len(self.threads) <= 30:
                     #create new thread
-                    n = len(threads)
-                    threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,),name="MsgProcessor"+str(n)))
-                    threads[n].setDaemon(True)
-                    threads[n].start()
-                    log.info("new thread added")
+                    thread_num = len(self.threads)
+                    self.threads.append(threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num,),name="MsgProcessor"+str(thread_num)))
+                    self.threads[thread_num].setDaemon(True)
+                    self.threads[thread_num].start()
 
             if (0 == num_of_messages):
-                if wait_time * 2 < 10:
-                    wait_time = wait_time * 2
-                    log.info("increased wait time to "+str(wait_time))
-                elif len(threads) > 1:
+                if len(self.threads) > 1:
                     pass
                     #delete thread
-                    # n = len(threads) - 1
-                    # threads[n].start()
-                    # threads.remove(threads[n])
-                    # log.info("thread removed")
+                    thread_num = len(self.threads) - 1
+                    self.threads.remove(self.threads[thread_num])
+
+                elif wait_time * 2 < 10:
+                    wait_time = wait_time * 2
+                    log.info("increased wait time to "+str(wait_time))
 
 
             if last_average + datetime.timedelta(minutes = 1) < now:
@@ -235,6 +238,12 @@ class eventProcessing:
                 self.calculate_average(file,self.minute_messages)
                 self.minute_messages = []
 
+        self.threads = []
+
+        now = datetime.datetime.now()
+        finish_time = now + datetime.timedelta(minutes = 0.5)
+        while finish_time>now:
+            now = datetime.datetime.now()
 
         response = sqs.delete_queue(QueueUrl=queue_url)
         log.info("Queue deleted")
