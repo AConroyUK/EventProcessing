@@ -28,9 +28,37 @@ class fileHandler:
             log.info(path + " loaded")
             return locations
 
-    def csvoutput(self,mean):
-        with open("eventProcessing.csv", "a+") as csvfile:
-            csvfile.write(str(mean)+"\n")
+    def output_city_average(self,minute_messages,first_run):
+        mean = sum(minute_messages)/len(minute_messages)
+        if first_run:
+            with open("city_average.csv", 'w') as csvfile:
+                csvfile.write(str(mean)+"\n")
+        else:
+            with open("city_average.csv", "a+") as csvfile:
+                csvfile.write(str(mean)+"\n")
+
+    def output_location_averages(self,location_data,first_run):
+        if first_run:
+            with open("location_averages.csv", 'w') as csvfile:
+                string = ""
+                for locationId in location_data.keys():
+                    string = string + (str(locationId)+",")
+                csvfile.write(string+"\n")
+                string = ""
+                for data in location_data.values():
+                    if int(data[1]) > 0:
+                        average = int(data[0]) / int(data[1])
+                        string = string + (str(average)+",")
+                csvfile.write(string+"\n")
+        else:
+            with open("location_averages.csv", "a+") as csvfile:
+                string = ""
+                for data in location_data.values():
+                    if int(data[1]) > 0:
+                        average = int(data[0]) / int(data[1])
+                        string = string + (str(average)+",")
+                csvfile.write(string+"\n")
+
 
     def message_num_output(self,num_of_messages,num_of_threads):
         with open("num_of_messages.csv", "a+") as csvfile:

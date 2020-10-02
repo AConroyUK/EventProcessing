@@ -3,20 +3,19 @@ import threading
 import boto3
 import datetime
 import time
+from queue import Queue
 from multiprocessing import Process,Lock
 from fileHandler import fileHandler
 from logHandler import logHandler
-
-
 
 class eventProcessing:
     def __init__(self):
         self.prev_messages = {}
         self.minute_messages = []
-        self.batch_delete = []
+        self.location_data = {}
         self.threads = []
-        self.active_threads = 0
-        self.queue_empty = False
+        self.message_queue = Queue()
+        self._sentinel = object()
 
     def setup(self,access_key,secret_key,config,topic_arn):
         s3 = boto3.client(
@@ -81,100 +80,86 @@ class eventProcessing:
 
         return s3,sqs,queue_url,queue_arn
 
-    def calculate_average(self,file,minute_messages):
-        if len(minute_messages)>0:
-            file.csvoutput(sum(minute_messages)/len(minute_messages))
+    def calculate_average(self,file,first_run):
+        if len(self.minute_messages)>0:
+            file.output_city_average(self.minute_messages,first_run)
+            file.output_location_averages(self.location_data,first_run)
             log.info("output to csv")
-        # datetime.utcfromtimestamp()
-        # pass
 
     def pretty_print(self,location,event,value):
         string = "| " + str(location).rjust(36) + " | " + str(event).rjust(15) + " | " + str(value).rjust(20) + "|"
         print(string)
         #print("-"*66)
 
-    def process_messages(self,resourcelock,locations,queue_url,sqs,thread_num):
-        prev_messages = self.prev_messages
-        minute_messages = self.minute_messages
+    def process_messages(self,resourcelock,locations,thread_num):
         now = datetime.datetime.now()
-        finish_time = now + datetime.timedelta(minutes = 1)
         log.info("thread "+str(thread_num)+" started")
-        self.active_threads += 1
-        while finish_time>now and len(self.threads) > thread_num:
-            now = datetime.datetime.now()
-            response = sqs.receive_message(
-                QueueUrl=queue_url,
-                MaxNumberOfMessages=10,
-                VisibilityTimeout=20,
-                WaitTimeSeconds=20
-            )
+
+        while True:
             try:
-                num_of_messages = len(response["Messages"])
-            except Exception as e:
-                log.info("exception raised: "+str(e))
-                return
-            batch_delete = []
-            for message in response["Messages"]:
-                sensor = json.loads(message["Body"])
-                batch_delete.append(dict([('Id',message["MessageId"]),('ReceiptHandle',message["ReceiptHandle"])]))
-                #log.debug(sensor["Message"])
-                try:
-                    sensor_msg = json.loads(sensor["Message"])
-                except json.decoder.JSONDecodeError:
-                    log.error("exception raised: json.decoder.JSONDecodeError")
+                message = self.message_queue.get()
+                if message == self._sentinel:
                     break
-                except UnicodeEncodeError:
-                    log.error("exception raised: UnicodeEncodeError")
-                    break
-
-                try:
-                    sensor_msg["locationId"]
-                except KeyError:
-                    log.error("exception raised: KeyError")
-                    break
-                if sensor_msg["locationId"] in locations:
-                    resourcelock.acquire()
+                else:
+                    sensor = json.loads(message["Body"])
                     try:
+                        sensor_msg = json.loads(sensor["Message"])
+                        keyError = False
                         try:
-                            if sensor_msg["eventId"] in prev_messages[sensor_msg["locationId"]]:
-                                #log.debug("duplicate event found")
-                                log.debug("duplicate event: "+sensor_msg["eventId"])
-                            else:
-                                #log.debug(sensor_msg)
-                                if len(prev_messages[sensor_msg["locationId"]]) == 25:
-                                    prev_messages[sensor_msg["locationId"]].pop(0)
-                                prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                                #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
-                                minute_messages.append(int(sensor_msg["value"]))
+                            sensor_msg["locationId"]
                         except KeyError:
-                            log.debug("location added: " + sensor_msg["locationId"])
-                            prev_messages[sensor_msg["locationId"]] = []
-                            #log.debug(sensor_msg)
-                            prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
-                            #self.pretty_print(sensor_msg["locationId"],sensor_msg["timestamp"],sensor_msg["value"])
-                            minute_messages.append(int(sensor_msg["value"]))
-                    finally:
-                        resourcelock.release()
+                            log.error("exception raised: KeyError")
+                            keyError = True
 
-            log.debug("processed "+str(num_of_messages)+" messages")
-            self.prev_messages = prev_messages
-            self.minute_messages = minute_messages
-            self.batch_delete = batch_delete
-            if batch_delete != []:
-                response = sqs.delete_message_batch(
-                    QueueUrl=queue_url,
-                    Entries=batch_delete
-                )
-                log.info("batch of " + str(len(batch_delete)) +" deleted")
+                        if keyError == False and sensor_msg["locationId"] in locations:
+                            resourcelock.acquire()
+                            try:
+                                if sensor_msg["eventId"] in self.prev_messages[sensor_msg["locationId"]]:
+                                    log.debug("duplicate event: "+sensor_msg["eventId"])
+                                else:
+                                    if len(self.prev_messages[sensor_msg["locationId"]]) == 25:
+                                        self.prev_messages[sensor_msg["locationId"]].pop(0)
+                                    self.prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                                    self.minute_messages.append(int(sensor_msg["value"]))
+                                    self.location_data[sensor_msg["locationId"]][0] += int(sensor_msg["value"])
+                                    self.location_data[sensor_msg["locationId"]][1] += 1
+                            except KeyError:
+                                log.debug("location added: " + sensor_msg["locationId"])
+                                self.prev_messages[sensor_msg["locationId"]] = []
+                                self.prev_messages[sensor_msg["locationId"]].append(sensor_msg["eventId"])
+                                self.minute_messages.append(int(sensor_msg["value"]))
+                                self.location_data[sensor_msg["locationId"]] = []
+                                self.location_data[sensor_msg["locationId"]].append(int(sensor_msg["value"]))
+                                self.location_data[sensor_msg["locationId"]].append(int(1))
+
+                            finally:
+                                resourcelock.release()
+
+                    except json.decoder.JSONDecodeError:
+                        log.error("exception raised: json.decoder.JSONDecodeError")
+                    except UnicodeEncodeError:
+                        log.error("exception raised: UnicodeEncodeError")
+
+            except Empty:
+                pass
 
         log.info("thread "+str(thread_num)+" stopped")
-        self.active_threads -= 1
+
+        resourcelock.acquire()
+        self.threads.remove(self.threads[thread_num])
+        resourcelock.release()
 
 
     def main(self):
         global log
         log = logHandler()
         file = fileHandler(log)
+        resourcelock = Lock()
+        ticker = threading.Event()
+        MaxNumberOfMessages = 10
+        first_run = True
+        run_duration = 10
+
         log.info("Started")
         config = file.loadconfig()
         access_key = config["ACCESS_KEY"]
@@ -192,74 +177,84 @@ class eventProcessing:
 
         s3.download_file(bucket_name, bucket_key, 'locations.json')
         locations = file.loadjson('locations.json')
-        # prev_messages = {}
-        # minute_messages = []
-        ticker = threading.Event()
-        now = datetime.datetime.now()
-        finish_time = now + datetime.timedelta(minutes = 2)
 
+        now = datetime.datetime.now()
+        finish_time = now + datetime.timedelta(minutes = run_duration)
         last_average = now
-        wait_time = 0.01
-        resourcelock = Lock()
-        self.threads = []
-        response = []
+
         thread_num = len(self.threads)
         self.threads.append(thread_num)
-        new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num,),name="MsgProcessor"+str(thread_num))
+        new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,thread_num,),name="MsgProcessor"+str(thread_num))
         new_thread.setDaemon(True)
         new_thread.start()
-            # thread.join()
 
-        while not ticker.wait(wait_time) and finish_time>now:
+        while finish_time>now:
             now = datetime.datetime.now()
+            queue_empty = self.message_queue.empty()
 
-            response = sqs.get_queue_attributes(
-                QueueUrl=queue_url,
-                AttributeNames=['ApproximateNumberOfMessages']
-            )
-            num_of_messages = int(response["Attributes"]["ApproximateNumberOfMessages"])
+            if queue_empty:
+                if len(self.threads) > 1:
+                    #terminate a thread
+                    self.message_queue.put(self._sentinel)
 
-            #log.info("approx "+str(num_of_messages)+" messages in queue")
-            file.message_num_output(num_of_messages,len(self.threads))
-
-
-
-            if (10 < num_of_messages):
-                if wait_time / 2 > 0.0001:
-                    wait_time = wait_time / 2
-                    log.info("reduced wait time to "+str(wait_time))
-                elif len(self.threads) <= 30:
-                    #create new thread
+            elif self.message_queue.qsize() > MaxNumberOfMessages:
+                if len(self.threads) <= 30:
+                    #add thread
+                    resourcelock.acquire()
                     thread_num = len(self.threads)
                     self.threads.append(thread_num)
-                    new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,queue_url,sqs,thread_num,),name="MsgProcessor"+str(thread_num))
+                    resourcelock.release()
+                    new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,thread_num,),name="MsgProcessor"+str(thread_num))
                     new_thread.setDaemon(True)
                     new_thread.start()
 
-            if (0 == num_of_messages):
-                self.queue_empty = True
-                if len(self.threads) > 1:
-                    #delete thread
-                    thread_num = len(self.threads) - 1
-                    self.threads.remove(self.threads[thread_num])
+            response = sqs.receive_message(
+                QueueUrl=queue_url,
+                MaxNumberOfMessages=MaxNumberOfMessages,
+                VisibilityTimeout=20,
+                WaitTimeSeconds=20
+            )
+            messages = response["Messages"]
+            log.debug("added to "+str(len(messages))+" message queue")
 
-                elif wait_time * 2 < 10:
-                    wait_time = wait_time * 2
-                    log.info("increased wait time to "+str(wait_time))
+            batch_delete = []
+            for message in messages:
+                self.message_queue.put(message)
+                batch_delete.append(dict([('Id',message["MessageId"]),('ReceiptHandle',message["ReceiptHandle"])]))
 
+            response = sqs.delete_message_batch(
+                QueueUrl=queue_url,
+                Entries=batch_delete
+            )
+            log.debug("batch of " + str(len(batch_delete)) +" deleted")
 
             if last_average + datetime.timedelta(minutes = 1) < now:
                 last_average = now
-                self.calculate_average(file,self.minute_messages)
+                self.calculate_average(file,first_run)
+                first_run = False
+                resourcelock.acquire()
                 self.minute_messages = []
-        log.info(self.threads)
-        self.threads = []
-        print(self.active_threads)
-        if self.active_threads > 0:
-            self.threads = []
-            log.info("waiting for remaining threads to terminate")
-        while self.active_threads > 0:
-            time.sleep(0.1)
+                resourcelock.release()
+
+        for i in self.threads:
+            self.message_queue.put(self._sentinel)
+
+        if self.threads != []:
+            log.info("waiting for "+str(len(self.threads))+" remaining threads to terminate")
+
+        while self.threads != []:
+            time.sleep(0.2)
+
+        max = 0
+        highest_toxicity = ""
+        for locationId,data in self.location_data.items():
+            average = 0
+            if int(data[1]) > 0:
+                average = float(data[0]) / int(data[1])
+            if average > max:
+                max = average
+                highest_toxicity = locationId
+        log.info("sensor with highest toxicity level("+str(max)+"): "+str(highest_toxicity))
 
         response = sqs.delete_queue(QueueUrl=queue_url)
         log.info("Queue deleted")
