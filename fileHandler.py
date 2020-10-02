@@ -60,6 +60,10 @@ class fileHandler:
                 csvfile.write(string+"\n")
 
 
-    def message_num_output(self,num_of_messages,num_of_threads):
-        with open("num_of_messages.csv", "a+") as csvfile:
-            csvfile.write(str(num_of_messages)+","+str(num_of_threads)+"\n")
+    def message_num_output(self,num_of_messages,num_of_threads,first_run):
+        if first_run:
+            with open("num_of_messages.csv", "w") as csvfile:
+                csvfile.write(str(num_of_messages)+","+str(num_of_threads)+"\n")
+        else:
+            with open("num_of_messages.csv", "a+") as csvfile:
+                csvfile.write(str(num_of_messages)+","+str(num_of_threads)+"\n")

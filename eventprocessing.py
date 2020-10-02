@@ -146,7 +146,9 @@ class eventProcessing:
         log.info("thread "+str(thread_num)+" stopped")
 
         resourcelock.acquire()
-        self.threads.remove(self.threads[thread_num])
+        log.debug(self.threads)
+        self.threads.remove(thread_num)
+        log.debug(self.threads)
         resourcelock.release()
 
 
@@ -192,22 +194,6 @@ class eventProcessing:
             now = datetime.datetime.now()
             queue_empty = self.message_queue.empty()
 
-            if queue_empty:
-                if len(self.threads) > 1:
-                    #terminate a thread
-                    self.message_queue.put(self._sentinel)
-
-            elif self.message_queue.qsize() > MaxNumberOfMessages:
-                if len(self.threads) <= 30:
-                    #add thread
-                    resourcelock.acquire()
-                    thread_num = len(self.threads)
-                    self.threads.append(thread_num)
-                    resourcelock.release()
-                    new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,thread_num,),name="MsgProcessor"+str(thread_num))
-                    new_thread.setDaemon(True)
-                    new_thread.start()
-
             response = sqs.receive_message(
                 QueueUrl=queue_url,
                 MaxNumberOfMessages=MaxNumberOfMessages,
@@ -216,6 +202,29 @@ class eventProcessing:
             )
             messages = response["Messages"]
             log.debug("added to "+str(len(messages))+" message queue")
+
+            if len(messages) == MaxNumberOfMessages:
+                if len(self.threads) <= 30:
+                    #add thread
+                    resourcelock.acquire()
+                    #thread_num = len(self.threads)
+                    thread_num = 0
+                    for thread in range(len(self.threads)+1):
+                        if thread not in self.threads:
+                            thread_num = thread
+                            break
+
+                    self.threads.append(thread_num)
+                    resourcelock.release()
+                    new_thread = threading.Thread(target=self.process_messages, args=(resourcelock,locations,thread_num,),name="MsgProcessor"+str(thread_num))
+                    new_thread.setDaemon(True)
+                    new_thread.start()
+            elif queue_empty:
+                if len(self.threads) > 1:
+                    #terminate a thread
+                    self.message_queue.put(self._sentinel)
+
+
 
             batch_delete = []
             for message in messages:
@@ -227,6 +236,8 @@ class eventProcessing:
                 Entries=batch_delete
             )
             log.debug("batch of " + str(len(batch_delete)) +" deleted")
+
+            file.message_num_output(len(batch_delete),len(self.threads),first_run)
 
             if last_average + datetime.timedelta(minutes = 1) < now:
                 last_average = now
@@ -241,6 +252,8 @@ class eventProcessing:
 
         if self.threads != []:
             log.info("waiting for "+str(len(self.threads))+" remaining threads to terminate")
+            log.debug(self.message_queue)
+            log.debug(self.threads)
 
         while self.threads != []:
             time.sleep(0.2)
