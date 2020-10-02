@@ -160,6 +160,7 @@ class eventProcessing:
         ticker = threading.Event()
         MaxNumberOfMessages = 10
         first_run = True
+        first_thread_data_run = True
         run_duration = 10
 
         log.info("Started")
@@ -237,7 +238,8 @@ class eventProcessing:
             )
             log.debug("batch of " + str(len(batch_delete)) +" deleted")
 
-            file.message_num_output(len(batch_delete),len(self.threads),first_run)
+            file.message_num_output(len(batch_delete),len(self.threads),first_thread_data_run)
+            first_thread_data_run = False
 
             if last_average + datetime.timedelta(minutes = 1) < now:
                 last_average = now

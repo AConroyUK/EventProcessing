@@ -17,6 +17,7 @@ with open('num_of_messages.csv', newline='') as csvfile:
 
     x_axis = range(n)
     plt.plot(threads,'-,k',color="blue")
+    plt.title(label="number of active threads over time")
     #plt.plot(messages,'+',color="red")
 
 
